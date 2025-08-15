@@ -1,4 +1,5 @@
 const axios = require('axios');
+const util = require('util');
 
 async function fetchApiData(requestConfig) {
     try {
@@ -10,14 +11,35 @@ async function fetchApiData(requestConfig) {
     }
 }
 
+function classifyTask(task) {
+    const title = (task.title || '').toLowerCase();
+    const tags = task.tags || [];
+    if (tags.some(tag => tag.toLowerCase().includes('redacaopaulista')) || title.includes('redação')) {
+        return 'essay';
+    }
+    const isProvaByTag = tags.some(tag => tag.toLowerCase().includes('prova'));
+    if (task.is_exam === true || title.includes('prova') || title.includes('avaliação') || isProvaByTag) {
+        return 'exam';
+    }
+    return 'task';
+}
+
 module.exports = async (req, res) => {
     try {
-        console.log("--- INICIANDO /api/login (VERSÃO ESTÁVEL DO UTILIZADOR) ---");
         if (req.method !== 'POST') { return res.status(405).json({ error: 'Método não permitido.' }); }
         const { user, senha } = req.body;
         if (!user || !senha) { return res.status(400).json({ error: 'RA e Senha são obrigatórios.' }); }
         
-        const loginResponse = await axios.post("https://sedintegracoes.educacao.sp.gov.br/credenciais/api/LoginCompletoToken", { user, senha }, { headers: { "Ocp-Apim-Subscription-Key": "2b03c1db3884488795f79c37c069381a" } });
+        let loginResponse;
+        try {
+            loginResponse = await axios.post("https://sedintegracoes.educacao.sp.gov.br/credenciais/api/LoginCompletoToken", { user, senha }, { headers: { "Ocp-Apim-Subscription-Key": "2b03c1db3884488795f79c37c069381a" } });
+        } catch (error) {
+            if (error.response?.status === 401) {
+                return res.status(401).json({ error: 'RA ou Senha inválidos. Verifique os seus dados.' });
+            }
+            throw error;
+        }
+
         if (!loginResponse.data || !loginResponse.data.token) { return res.status(401).json({ error: 'Credenciais inválidas ou resposta inesperada da SED.' }); }
         const tokenA = loginResponse.data.token;
         const userInfo = loginResponse.data.DadosUsuario;
@@ -54,15 +76,24 @@ module.exports = async (req, res) => {
         const allTasksRaw = (Array.isArray(pendingTasks) ? pendingTasks : []).concat(Array.isArray(expiredTasks) ? expiredTasks : []);
         const allTasks = [...new Map(allTasksRaw.map(task => [task.id, task])).values()];
         
+        const classifiedTasks = allTasks.map(task => ({ ...task, type: classifyTask(task) }));
+        
         userInfo.NAME = userInfo.NAME || dadosAluno?.aluno?.nome || 'Aluno';
         if(dadosAluno?.aluno) { userInfo.NOME_ESCOLA = dadosAluno.aluno.nmEscola; userInfo.SALA = `${dadosAluno.aluno.nrAnoSerie}º ${dadosAluno.aluno.nmTurma}`; }
 
-        const dashboardData = { tokenA, tokenB, userInfo, faltas: faltasData?.data || [], tarefas: allTasks, conquistas: conquistas?.data || [], notificacoes: Array.isArray(notificacoes) ? notificacoes : [], rooms: roomUserData ? roomUserData.rooms : [] };
+        const dashboardData = { tokenA, tokenB, userInfo, faltas: faltasData?.data || [], tarefas: classifiedTasks, conquistas: conquistas?.data || [], notificacoes: Array.isArray(notificacoes) ? notificacoes : [], rooms: roomUserData ? roomUserData.rooms : [] };
         res.status(200).json(dashboardData);
 
     } catch (error) {
-        console.error("--- ERRO FATAL NA FUNÇÃO /api/login ---", error);
-        res.status(500).json({ error: 'Ocorreu um erro fatal no servidor ao processar o login.', details: error.message });
+        console.error("--- ERRO FATAL DETALHADO EM /api/login ---", error);
+        res.status(500).json({ 
+            error: 'Ocorreu um erro fatal no servidor ao processar o login.', 
+            details: {
+                message: error.message,
+                stack: error.stack,
+                fullError: util.inspect(error, { depth: null })
+            }
+        });
     }
 };
-                           
+                 
